@@ -82,6 +82,8 @@ function formatMoles(moles) {
   return Number(moles.toFixed(3)).toString();
 }
 
+const INSPECTOR_MOLECULE_MIN_MOLES = 0.001;
+
 function getStateSymbol(state) {
   return { gas: "(g)", liquid: "(l)", solid: "(s)" }[state] ?? "";
 }
@@ -120,10 +122,14 @@ export default function Home() {
   const [isObjectMenuOpen, setIsObjectMenuOpen] = useState(false);
 
   const activeItem = sceneItems.find((item) => item.id === activeId);
+  const inspectorContents =
+    activeItem?.container?.contents.filter(
+      (entry) => entry.moles >= INSPECTOR_MOLECULE_MIN_MOLES,
+    ).sort((first, second) => second.moles - first.moles) ?? [];
   const activeMolecule =
-    activeItem?.container?.contents.find(
+    inspectorContents.find(
       (entry) => entry.molecule.canonicalSmiles === selectedMoleculeSmiles,
-    )?.molecule ?? activeItem?.container?.contents[0]?.molecule;
+    )?.molecule ?? inspectorContents[0]?.molecule;
   const beakerCount = sceneItems.length;
   const totalMoles = activeItem?.container?.contents.reduce((sum, item) => sum + item.moles, 0) ?? 0;
   const totalMass = activeItem?.container?.totalMass ?? 0;
@@ -1149,12 +1155,12 @@ export default function Home() {
                     <h3>Contents</h3>
                     <p>Current mixture in this vessel</p>
                   </div>
-                  <span className="content-count">{String(activeItem.container.contents.length).padStart(2, "0")}</span>
+                  <span className="content-count">{String(inspectorContents.length).padStart(2, "0")}</span>
                 </div>
 
-                {activeItem.container.contents.length ? (
+                {inspectorContents.length ? (
                   <div className="contents-list">
-                    {activeItem.container.contents.map((entry) => (
+                    {inspectorContents.map((entry) => (
                       <button
                         className={`molecule-card${activeMolecule === entry.molecule ? " molecule-card-selected" : ""}`}
                         key={`${entry.molecule.canonicalSmiles}-${entry.state}`}
@@ -1211,8 +1217,8 @@ export default function Home() {
                 ) : (
                   <div className="empty-state">
                     <span className="empty-icon" aria-hidden="true">⌬</span>
-                    <strong>No contents yet</strong>
-                    <span>Add a molecule to this vessel to get started.</span>
+                    <strong>No displayable contents</strong>
+                    <span>Molecules below 0.001 mol are hidden from the inspector.</span>
                   </div>
                 )}
 

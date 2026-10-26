@@ -1,4 +1,4 @@
-import { Atom, Molecule } from "../chemistry.js";
+import { Atom, Elements, Molecule } from "../chemistry.js";
 
 export function getAdjacency(molecule) {
   const adjacency = molecule.atoms.map(() => []);
@@ -187,7 +187,7 @@ export function getNucleophileStrength(molecule) {
   if (atom.formalCharge < 0) return 1;
   if (atom.element.symbol === "O") {
     if (atom.implicitHydrogens >= 2 && degree === 0) return 0.0001;
-    if (atom.implicitHydrogens === 1) return 0.05;
+    if (atom.implicitHydrogens === 1) return 0.01;
     return 0.025;
   }
   if (atom.element.symbol === "N") {
@@ -227,15 +227,30 @@ export function makeSubstitutionProducts(
     site.leavingAtomIndex,
   );
   const substrateAtoms = substrateGraph.atoms;
-  const nucleophileAtoms = cloneAtoms(nucleophile, "nucleophile");
+  const nucleophileComponents = getMoleculeComponents(nucleophile);
+  const attackingComponent = nucleophileComponents.find((indices) =>
+    indices.includes(nucleophileSite.atomIndex),
+  );
+  if (!attackingComponent) {
+    throw new TypeError("Could not find the nucleophilic atom in its molecule.");
+  }
+  const nucleophileGraph = cloneMoleculeFragment(
+    nucleophile,
+    attackingComponent,
+    "nucleophile",
+  );
+  const nucleophileAtoms = nucleophileGraph.atoms;
+  const nucleophileBonds = nucleophileGraph.bonds;
+  const nucleophileIndexInProduct =
+    nucleophileGraph.oldToNew.get(nucleophileSite.atomIndex);
   nucleophileAtoms.forEach((atom) => {
     atom.stereoNeighbors = atom.stereoNeighbors.map((neighbor) =>
       typeof neighbor === "number" ? neighbor + substrateAtoms.length : neighbor,
     );
   });
-  const nucleophileIndex = substrateAtoms.length + nucleophileSite.atomIndex;
+  const nucleophileIndex = substrateAtoms.length + nucleophileIndexInProduct;
   const carbonIndex = substrateGraph.oldToNew.get(site.carbonIndex);
-  const nucleophilicAtom = nucleophileAtoms[nucleophileSite.atomIndex];
+  const nucleophilicAtom = nucleophileAtoms[nucleophileIndexInProduct];
   const transfersProton = nucleophilicAtom.formalCharge === 0 && nucleophilicAtom.implicitHydrogens > 0;
 
   if (transfersProton) nucleophilicAtom.implicitHydrogens -= 1;
@@ -256,7 +271,7 @@ export function makeSubstitutionProducts(
   }
   const bonds = [
     ...substrateGraph.bonds,
-    ...cloneBonds(nucleophile.bonds).map((bond) => ({
+    ...nucleophileBonds.map((bond) => ({
       ...bond,
       from: bond.from + substrateAtoms.length,
       to: bond.to + substrateAtoms.length,
@@ -272,9 +287,16 @@ export function makeSubstitutionProducts(
     site.leavingAtomIndex,
     transfersProton,
   );
+  const spectatorProducts = nucleophileComponents
+    .filter((indices) => indices !== attackingComponent)
+    .map((indices) => {
+      const component = cloneMoleculeFragment(nucleophile, indices, "nucleophile-spectator");
+      return createMoleculeFromGraph(component.atoms, component.bonds);
+    });
   return [
     { molecule: product, moles: 1 },
     { molecule: leavingGroup, moles: 1 },
+    ...spectatorProducts.map((molecule) => ({ molecule, moles: 1 })),
   ];
 }
 
@@ -301,6 +323,193 @@ export function findCarboxylicAcidSite(molecule) {
     }
   }
   return null;
+}
+
+export function findAlcoholSite(molecule) {
+  const adjacency = getAdjacency(molecule);
+  for (let oxygenIndex = 0; oxygenIndex < molecule.atoms.length; oxygenIndex += 1) {
+    const oxygen = molecule.atoms[oxygenIndex];
+    if (
+      oxygen.element.symbol !== "O" ||
+      oxygen.formalCharge !== 0 ||
+      oxygen.implicitHydrogens !== 1
+    ) {
+      continue;
+    }
+    const carbonNeighbor = adjacency[oxygenIndex].find(
+      ({ atomIndex, bond }) =>
+        bond.order === 1 &&
+        molecule.atoms[atomIndex].element.symbol === "C" &&
+        !molecule.atoms[atomIndex].aromatic &&
+        !adjacency[atomIndex].some(
+          ({ atomIndex: neighborIndex, bond: neighborBond }) =>
+            neighborBond.order === 2 &&
+            molecule.atoms[neighborIndex].element.symbol === "O",
+        ),
+    );
+    if (carbonNeighbor) return { oxygenIndex };
+  }
+  return null;
+}
+
+export function makeAlkoxide(alcohol, site) {
+  const atoms = cloneAtoms(alcohol);
+  const oxygen = atoms[site.oxygenIndex];
+  if (!oxygen || oxygen.element.symbol !== "O" || oxygen.implicitHydrogens < 1) {
+    throw new TypeError("The alcohol reactant does not contain a deprotonatable oxygen.");
+  }
+  oxygen.implicitHydrogens -= 1;
+  oxygen.formalCharge -= 1;
+  return createMoleculeFromGraph(atoms, cloneBonds(alcohol.bonds));
+}
+
+export function makeAlcohol(alkoxide) {
+  const adjacency = getAdjacency(alkoxide);
+  const atoms = cloneAtoms(alkoxide);
+  const oxygenIndex = atoms.findIndex(
+    (atom, index) =>
+      atom.element.symbol === "O" &&
+      atom.formalCharge === -1 &&
+      atom.implicitHydrogens === 0 &&
+      adjacency[index].some(
+        ({ atomIndex, bond }) =>
+          bond.order === 1 && atoms[atomIndex].element.symbol === "C",
+      ),
+  );
+  if (oxygenIndex < 0) throw new TypeError("The reactant does not contain an alkoxide.");
+  atoms[oxygenIndex].formalCharge = 0;
+  atoms[oxygenIndex].implicitHydrogens += 1;
+  return createMoleculeFromGraph(atoms, cloneBonds(alkoxide.bonds));
+}
+
+export function makeAlcoholDeprotonationProducts(alcohol, base, site, baseType) {
+  const alkoxide = makeAlkoxide(alcohol, site);
+  if (baseType === "hydroxide") {
+    return [alkoxide, makeConjugateAcid(base, "hydroxide")];
+  }
+  if (baseType === "amide") {
+    return [alkoxide, makeConjugateAcid(base, "amide")];
+  }
+  if (baseType === "hydride") {
+    return [alkoxide, makeHydrogenGas(base)];
+  }
+  throw new TypeError(`Unsupported alcohol deprotonation base: ${baseType}`);
+}
+
+export function makeAlcoholDeprotonationReactants(alkoxide, conjugateAcid, baseType) {
+  return [
+    { molecule: makeAlcohol(alkoxide), moles: 1 },
+    { molecule: makeConjugateBase(conjugateAcid, baseType), moles: 1 },
+  ];
+}
+
+function makeConjugateAcid(base, baseType) {
+  const atoms = cloneAtoms(base);
+  const expectedElement = baseType === "amide" ? "N" : "O";
+  const expectedHydrogens = baseType === "amide" ? 2 : 1;
+  const atom = atoms.find(
+    (candidate) =>
+      candidate.element.symbol === expectedElement &&
+      candidate.formalCharge === -1 &&
+      candidate.implicitHydrogens === expectedHydrogens,
+  );
+  if (!atom) throw new TypeError(`The ${baseType} reactant has an invalid structure.`);
+  atom.formalCharge = 0;
+  atom.implicitHydrogens += 1;
+  return createMoleculeFromGraph(atoms, cloneBonds(base.bonds));
+}
+
+function makeConjugateBase(conjugateAcid, baseType) {
+  if (baseType === "hydride") return makeHydride(conjugateAcid);
+  const atoms = cloneAtoms(conjugateAcid);
+  const expectedElement = baseType === "amide" ? "N" : "O";
+  const expectedHydrogens = baseType === "amide" ? 3 : 2;
+  const atom = atoms.find(
+    (candidate) =>
+      candidate.element.symbol === expectedElement &&
+      candidate.formalCharge === 0 &&
+      candidate.implicitHydrogens === expectedHydrogens,
+  );
+  if (!atom) throw new TypeError(`The ${baseType} conjugate acid has an invalid structure.`);
+  atom.formalCharge = -1;
+  atom.implicitHydrogens -= 1;
+  return createMoleculeFromGraph(atoms, cloneBonds(conjugateAcid.bonds));
+}
+
+function makeHydrogenGas(hydride) {
+  const hydrogen = hydride.atoms.find(
+    (atom) => atom.element.symbol === "H" && atom.formalCharge === -1,
+  );
+  if (!hydrogen) throw new TypeError("The hydride reactant must contain H-.");
+  return createMoleculeFromGraph(
+    [new Atom(Elements.H), new Atom(Elements.H)],
+    [{ from: 0, to: 1, order: 1, aromatic: false }],
+  );
+}
+
+function makeHydride(hydrogenGas) {
+  const hydrogenAtoms = hydrogenGas.atoms.filter((atom) => atom.element.symbol === "H");
+  const hydrogenBond = hydrogenGas.bonds.find(
+    (bond) =>
+      bond.order === 1 &&
+      hydrogenGas.atoms[bond.from].element.symbol === "H" &&
+      hydrogenGas.atoms[bond.to].element.symbol === "H",
+  );
+  if (hydrogenAtoms.length !== 2 || !hydrogenBond) {
+    throw new TypeError("The conjugate acid of hydride must be H2.");
+  }
+  const atom = new Atom(hydrogenAtoms[0].element, {
+    id: hydrogenAtoms[0].id,
+    formalCharge: -1,
+  });
+  return createMoleculeFromGraph([atom], []);
+}
+
+export function makeHydroxide(water) {
+  const atoms = cloneAtoms(water);
+  const oxygen = atoms.find(
+    (atom) =>
+      atom.element.symbol === "O" &&
+      atom.formalCharge === 0 &&
+      atom.implicitHydrogens === 2,
+  );
+  if (!oxygen) throw new TypeError("The reactant must be water.");
+  oxygen.implicitHydrogens -= 1;
+  oxygen.formalCharge -= 1;
+  return createMoleculeFromGraph(atoms, cloneBonds(water.bonds));
+}
+
+export function makeProton(water) {
+  if (!water.atoms.some((atom) => atom.element.symbol === "O")) {
+    throw new TypeError("The reactant must be water.");
+  }
+  return createMoleculeFromGraph(
+    [new Atom(Elements.H, { formalCharge: 1 })],
+    [],
+  );
+}
+
+export function makeWaterFromHydroxide(hydronium, hydroxide) {
+  if (
+    hydronium.atoms.length !== 1 ||
+    hydronium.bonds.length !== 0 ||
+    hydronium.atoms[0].element.symbol !== "O" ||
+    hydronium.atoms[0].formalCharge !== 1 ||
+    hydronium.atoms[0].implicitHydrogens !== 3
+  ) {
+    throw new TypeError("The reactant must be hydronium.");
+  }
+  const atoms = cloneAtoms(hydroxide);
+  const oxygen = atoms.find(
+    (atom) =>
+      atom.element.symbol === "O" &&
+      atom.formalCharge === -1 &&
+      atom.implicitHydrogens === 1,
+  );
+  if (!oxygen) throw new TypeError("The reactant must be hydroxide.");
+  oxygen.implicitHydrogens += 1;
+  oxygen.formalCharge += 1;
+  return createMoleculeFromGraph(atoms, cloneBonds(hydroxide.bonds));
 }
 
 export function findKetoneAldehydeCarbonylSite(molecule) {

@@ -1,5 +1,6 @@
 import { MixtureContainer } from "./chemistry.js";
 import {
+  AlcoholDeprotonation,
   CarboxylicAcidDissociation,
   E1,
   E2,
@@ -8,10 +9,12 @@ import {
   NucleophilicAdditionElimination,
   SN1,
   SN2,
+  WaterAutoionization,
 } from "./reactions/index.js";
 
 export const REACTION_INTERVAL_MS = 200;
 export const REACTION_DT_SECONDS = 0.2;
+export const MIN_REACTION_AMOUNT_MOLES = 0.001;
 export const ARRHENIUS_PRE_EXPONENTIAL = 0.102;
 export const ACTIVATION_ENERGY_J_PER_MOL = 50;
 export const GAS_CONSTANT_J_PER_MOL_K = 8.31;
@@ -40,11 +43,25 @@ export function calculateArrheniusRateConstant(
   return preExponential * Math.exp(-activationEnergy / (gasConstant * temperatureKelvin));
 }
 
+function getReactionLiquidVolumeLiters(container) {
+  return container.contents.reduce(
+    (volume, entry) =>
+      entry.moles >= MIN_REACTION_AMOUNT_MOLES && entry.state === "liquid"
+        ? volume + (entry.moles * entry.molecule.molecularMass) / entry.molecule.getDensity() / 1000
+        : volume,
+    0,
+  );
+}
+
 function getConcentration(container, molecule) {
-  const volumeLiters = container.liquidVolumeLiters;
+  const volumeLiters = getReactionLiquidVolumeLiters(container);
   if (volumeLiters <= 0) return 0;
   const moles = container.contents
-    .filter((entry) => entry.molecule.canonicalSmiles === molecule.canonicalSmiles)
+    .filter(
+      (entry) =>
+        entry.moles >= MIN_REACTION_AMOUNT_MOLES &&
+        entry.molecule.canonicalSmiles === molecule.canonicalSmiles,
+    )
     .reduce((sum, entry) => sum + entry.moles, 0);
   return moles / volumeLiters;
 }
@@ -52,6 +69,7 @@ function getConcentration(container, molecule) {
 function getContent(container, molecule, state = null) {
   return container.contents.find(
     (entry) =>
+      entry.moles >= MIN_REACTION_AMOUNT_MOLES &&
       entry.molecule.canonicalSmiles === molecule.canonicalSmiles &&
       (state === null || entry.state === state),
   );
@@ -59,7 +77,11 @@ function getContent(container, molecule, state = null) {
 
 function findReactantCombinations(container, functionalGroups) {
   const candidates = functionalGroups.map((group) =>
-    container.contents.filter((entry) => entry.moles > 0 && group.matches(entry.molecule)),
+    container.contents.filter(
+      (entry) =>
+        entry.moles >= MIN_REACTION_AMOUNT_MOLES &&
+        group.matches(entry.molecule),
+    ),
   );
   if (candidates.some((entries) => entries.length === 0)) return [];
 
@@ -108,8 +130,8 @@ function applyReactionExtent(
       entry.state,
     );
   });
-  products.forEach(({ molecule, moles }) => {
-    container.add(molecule, limitingExtent * moles, "liquid");
+  products.forEach(({ molecule, moles, state }) => {
+    container.add(molecule, limitingExtent * moles, state ?? "liquid");
   });
   return true;
 }
@@ -136,7 +158,9 @@ function capEquilibriumExtent({
         Math.max(
           0,
           concentration +
-            (direction < 0 ? (extent * reverseProducts[index].moles) / volumeLiters : -extent / volumeLiters),
+            (direction < 0
+              ? (extent * reverseProducts[index].moles) / volumeLiters
+              : -(extent * reaction.reactantStoichiometricCoefficients[index]) / volumeLiters),
         ),
     );
     const productConcentrations = initialProductConcentrations.map(
@@ -172,10 +196,20 @@ function capEquilibriumExtent({
 }
 
 function runForwardReaction(container, reaction, reactantEntries) {
+  if (
+    reactantEntries.some(
+      (entry) =>
+        entry.moles < MIN_REACTION_AMOUNT_MOLES ||
+        (getContent(container, entry.molecule, entry.state)?.moles ?? 0) <
+          MIN_REACTION_AMOUNT_MOLES,
+    )
+  ) {
+    return false;
+  }
   const reactants = reactantEntries.map((entry) => entry.molecule);
   if (!reaction.canReact(...reactants)) return false;
 
-  const volumeLiters = container.liquidVolumeLiters;
+  const volumeLiters = getReactionLiquidVolumeLiters(container);
   if (volumeLiters <= 0) return false;
 
   const products = reaction.runReaction(...reactants);
@@ -226,18 +260,33 @@ function runForwardReaction(container, reaction, reactantEntries) {
         products.map(({ moles }) => moles),
       );
     }
-    const maximumExtent = Math.min(...reactantEntries.map((entry) => entry.moles));
+    const maximumExtent = Math.min(
+      ...reactantEntries.map((entry, index) =>
+        reaction.reactantStoichiometricCoefficients[index] === 0
+          ? Number.POSITIVE_INFINITY
+          : entry.moles / reaction.reactantStoichiometricCoefficients[index],
+      ),
+    );
     const extent = capEquilibriumExtent({
       container,
       reaction,
       reactants,
       products,
-      reverseProducts: reactantEntries.map((entry) => ({ molecule: entry.molecule, moles: 1 })),
+      reverseProducts: reactantEntries.map((entry, index) => ({
+        molecule: entry.molecule,
+        moles: reaction.reactantStoichiometricCoefficients[index],
+      })),
       direction: 1,
       maximumExtent: Math.min(rate * volumeLiters * REACTION_DT_SECONDS, maximumExtent),
       volumeLiters,
     });
-    return applyReactionExtent(container, reactantEntries, products, extent);
+    return applyReactionExtent(
+      container,
+      reactantEntries,
+      products,
+      extent,
+      reaction.reactantStoichiometricCoefficients,
+    );
   } else {
     rate = rateConstant * reaction.getRateFactor(reactantConcentrations, ...reactants);
   }
@@ -259,6 +308,10 @@ export function createReactionSystem({
   reactions = [
     new CarboxylicAcidDissociation(),
     new HydrogenHalideDissociation(),
+    new WaterAutoionization(),
+    new AlcoholDeprotonation({ baseType: "hydroxide" }),
+    new AlcoholDeprotonation({ baseType: "amide" }),
+    new AlcoholDeprotonation({ baseType: "hydride" }),
     new SN1(),
     new SN2(),
     new E1(),

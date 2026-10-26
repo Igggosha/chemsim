@@ -7,6 +7,7 @@ export class GenericReaction {
     functionalGroups,
     ratePowers,
     catalystIndices = [],
+    reactantStoichiometricCoefficients,
     equilibrium = null,
   } = {}) {
     if (new.target === GenericReaction) {
@@ -46,9 +47,21 @@ export class GenericReaction {
     this.functionalGroups = Object.freeze([...functionalGroups]);
     this.ratePowers = Object.freeze([...ratePowers]);
     this.catalystIndices = Object.freeze([...catalystIndices]);
-    this.reactantStoichiometricCoefficients = Object.freeze(
-      functionalGroups.map((_, index) => (this.catalystIndices.includes(index) ? 0 : 1)),
-    );
+    const stoichiometricCoefficients = reactantStoichiometricCoefficients ??
+      functionalGroups.map((_, index) => (this.catalystIndices.includes(index) ? 0 : 1));
+    if (
+      !Array.isArray(stoichiometricCoefficients) ||
+      stoichiometricCoefficients.length !== functionalGroups.length ||
+      stoichiometricCoefficients.some(
+        (coefficient, index) =>
+          !Number.isInteger(coefficient) ||
+          coefficient < 0 ||
+          (this.catalystIndices.includes(index) && coefficient !== 0),
+      )
+    ) {
+      throw new TypeError("A reaction must declare one non-negative integer stoichiometric coefficient per reactant.");
+    }
+    this.reactantStoichiometricCoefficients = Object.freeze([...stoichiometricCoefficients]);
     if (equilibrium !== null) {
       const { constant, productCount, reverseRatePowers, productFunctionalGroups } = equilibrium;
       if (
@@ -171,7 +184,8 @@ export class GenericReaction {
           !product ||
           !(product.molecule instanceof Molecule) ||
           !Number.isFinite(product.moles) ||
-          product.moles <= 0,
+          product.moles <= 0 ||
+          (product.state !== undefined && !["liquid", "solid", "gas"].includes(product.state)),
       )
     ) {
       throw new TypeError("RunReaction() must return products as { molecule, moles } entries.");
@@ -209,7 +223,8 @@ export class GenericReaction {
           !product ||
           !(product.molecule instanceof Molecule) ||
           !Number.isFinite(product.moles) ||
-          product.moles <= 0,
+          product.moles <= 0 ||
+          (product.state !== undefined && !["liquid", "solid", "gas"].includes(product.state)),
       )
     ) {
       throw new TypeError("RunReverseReaction() must return valid { molecule, moles } products.");

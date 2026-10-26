@@ -615,10 +615,10 @@ export class Molecule {
     const componentCharges = components.map((indices) =>
       indices.reduce((charge, index) => charge + this.atoms[index].formalCharge, 0),
     );
-    if (
-      !componentCharges.some((charge) => charge !== 0) ||
-      !componentCharges.some((charge) => charge === 0)
-    ) {
+    const hasChargedComponents = componentCharges.some((charge) => charge !== 0);
+    const hasNeutralComponents = componentCharges.some((charge) => charge === 0);
+    const totalCharge = componentCharges.reduce((charge, componentCharge) => charge + componentCharge, 0);
+    if (!hasChargedComponents || (!hasNeutralComponents && totalCharge !== 0)) {
       return [this];
     }
 
