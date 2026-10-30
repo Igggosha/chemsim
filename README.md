@@ -1,6 +1,6 @@
 # Chem Sim
 
-Chem Sim is an interactive isometric workspace for moving lab equipment and inspecting molecular mixtures.
+Chem Sim is an interactive isometric workspace for using lab equipment to simulate organic reactions.
 
 ## Run locally
 
