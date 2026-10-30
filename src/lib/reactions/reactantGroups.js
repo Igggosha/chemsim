@@ -36,6 +36,16 @@ export const CARBOXYLIC_ACID = new FunctionalGroup("Carboxylic acid", "RC(=O)O")
 export const ALCOHOL = new FunctionalGroup("Alcohol", "C[OH]");
 export const ALKOXIDE = new FunctionalGroup("Alkoxide", "C[O-]");
 export const CARBONYL = new FunctionalGroup("Carbonyl", "C=O");
+export const DICHROMATE = new FunctionalGroup(
+  "Dichromate ion",
+  "[O-][Cr](=O)(=O)O[Cr](=O)(=O)[O-]",
+);
+export const PERMANGANATE = new FunctionalGroup(
+  "Permanganate ion",
+  "[O-][Mn](=O)(=O)=O",
+);
+export const BOROHYDRIDE = new FunctionalGroup("Borohydride ion", "[BH4-]");
+export const ALUMINIUM_HYDRIDE = new FunctionalGroup("Aluminium hydride ion", "[AlH4-]");
 export const ACYL_DERIVATIVE = new FunctionalGroup("Acyl chloride or anhydride", [
   "RC(=O)Cl",
   "RC(=O)OC(=O)R",

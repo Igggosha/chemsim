@@ -3,6 +3,10 @@ export {
   DEFAULT_CARBOXYLIC_ACID_KA,
 } from "./carboxylicAcidDissociation.js";
 export { AlcoholDeprotonation } from "./alcoholDeprotonation.js";
+export { AlcoholOxidation } from "./alcoholOxidation.js";
+export { AldehydeOxidation } from "./aldehydeOxidation.js";
+export { CarboxylicAcidReduction } from "./carboxylicAcidReduction.js";
+export { CarbonylReduction } from "./carbonylReduction.js";
 export { E1 } from "./e1.js";
 export { E2 } from "./e2.js";
 export {

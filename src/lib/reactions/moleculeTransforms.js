@@ -352,6 +352,188 @@ export function findAlcoholSite(molecule) {
   return null;
 }
 
+export function findOxidizableAlcoholSite(molecule) {
+  const alcoholSite = findAlcoholSite(molecule);
+  if (!alcoholSite) return null;
+  const carbonNeighbor = getAdjacency(molecule)[alcoholSite.oxygenIndex].find(
+    ({ atomIndex, bond }) =>
+      bond.order === 1 &&
+      molecule.atoms[atomIndex].element.symbol === "C" &&
+      molecule.atoms[atomIndex].implicitHydrogens > 0,
+  );
+  return carbonNeighbor
+    ? { ...alcoholSite, carbonIndex: carbonNeighbor.atomIndex }
+    : null;
+}
+
+export function oxidizeAlcoholToCarbonyl(alcohol, site) {
+  const atoms = cloneAtoms(alcohol);
+  const bonds = cloneBonds(alcohol.bonds);
+  const carbon = atoms[site.carbonIndex];
+  const oxygen = atoms[site.oxygenIndex];
+  const carbonOxygenBond = bonds.find(
+    (bond) =>
+      bond.order === 1 &&
+      ((bond.from === site.carbonIndex && bond.to === site.oxygenIndex) ||
+        (bond.to === site.carbonIndex && bond.from === site.oxygenIndex)),
+  );
+  if (!carbon || !oxygen || !carbonOxygenBond || carbon.implicitHydrogens < 1) {
+    throw new TypeError("Alcohol oxidation requires a carbon-bound hydroxyl group with an alpha hydrogen.");
+  }
+  carbonOxygenBond.order = 2;
+  carbon.implicitHydrogens -= 1;
+  carbon.chirality = null;
+  carbon.stereoNeighbors = [];
+  oxygen.implicitHydrogens = 0;
+  return createMoleculeFromGraph(atoms, bonds);
+}
+
+export function findAldehydeSite(molecule) {
+  const adjacency = getAdjacency(molecule);
+  for (let carbonIndex = 0; carbonIndex < molecule.atoms.length; carbonIndex += 1) {
+    const carbon = molecule.atoms[carbonIndex];
+    if (carbon.element.symbol !== "C" || carbon.implicitHydrogens < 1) continue;
+    const carbonyl = adjacency[carbonIndex].find(
+      ({ atomIndex, bond }) =>
+        bond.order === 2 && molecule.atoms[atomIndex].element.symbol === "O",
+    );
+    if (!carbonyl) continue;
+    const hasSingleBondedOxygen = adjacency[carbonIndex].some(
+      ({ atomIndex, bond }) =>
+        bond.order === 1 && molecule.atoms[atomIndex].element.symbol === "O",
+    );
+    if (!hasSingleBondedOxygen) return { carbonIndex, carbonylOxygenIndex: carbonyl.atomIndex };
+  }
+  return null;
+}
+
+export function oxidizeAldehydeToCarboxylicAcid(aldehyde, site) {
+  const atoms = cloneAtoms(aldehyde);
+  const carbon = atoms[site.carbonIndex];
+  if (!carbon || carbon.element.symbol !== "C" || carbon.implicitHydrogens < 1) {
+    throw new TypeError("Aldehyde oxidation requires a carbonyl carbon bearing hydrogen.");
+  }
+  carbon.implicitHydrogens -= 1;
+  atoms.push(new Atom(Elements.O, { implicitHydrogens: 1 }));
+  return createMoleculeFromGraph(
+    atoms,
+    [
+      ...cloneBonds(aldehyde.bonds),
+      {
+        from: site.carbonIndex,
+        to: atoms.length - 1,
+        order: 1,
+        aromatic: false,
+      },
+    ],
+  );
+}
+
+export function reduceCarboxylicAcidToAldehyde(acid, site) {
+  const atoms = cloneAtoms(acid);
+  const graph = omitAtom(atoms, cloneBonds(acid.bonds), site.hydroxylOxygenIndex);
+  const carbonIndex = graph.oldToNew.get(site.carbonIndex);
+  const carbon = graph.atoms[carbonIndex];
+  if (!carbon) throw new TypeError("Could not locate the carboxylic acid carbon.");
+  carbon.implicitHydrogens += 1;
+  return createMoleculeFromGraph(graph.atoms, graph.bonds);
+}
+
+export function findReducibleCarbonylSite(molecule) {
+  const adjacency = getAdjacency(molecule);
+  for (let carbonIndex = 0; carbonIndex < molecule.atoms.length; carbonIndex += 1) {
+    const carbon = molecule.atoms[carbonIndex];
+    if (carbon.element.symbol !== "C") continue;
+    const carbonyl = adjacency[carbonIndex].find(
+      ({ atomIndex, bond }) =>
+        bond.order === 2 && molecule.atoms[atomIndex].element.symbol === "O",
+    );
+    if (!carbonyl) continue;
+    const isCarboxylicAcidOrDerivative = adjacency[carbonIndex].some(
+      ({ atomIndex, bond }) =>
+        bond.order === 1 &&
+        molecule.atoms[atomIndex].element.symbol !== "C" &&
+        molecule.atoms[atomIndex].element.symbol !== "H",
+    );
+    if (!isCarboxylicAcidOrDerivative) {
+      return { carbonIndex, carbonylOxygenIndex: carbonyl.atomIndex };
+    }
+  }
+  return null;
+}
+
+export function reduceCarbonylToAlcohol(carbonylCompound, site) {
+  const atoms = cloneAtoms(carbonylCompound);
+  const bonds = cloneBonds(carbonylCompound.bonds);
+  const carbon = atoms[site.carbonIndex];
+  const oxygen = atoms[site.carbonylOxygenIndex];
+  const carbonylBond = bonds.find(
+    (bond) =>
+      bond.order === 2 &&
+      ((bond.from === site.carbonIndex && bond.to === site.carbonylOxygenIndex) ||
+        (bond.to === site.carbonIndex && bond.from === site.carbonylOxygenIndex)),
+  );
+  if (!carbon || !oxygen || !carbonylBond) {
+    throw new TypeError("Carbonyl reduction requires a carbon-oxygen double bond.");
+  }
+  carbonylBond.order = 1;
+  carbon.implicitHydrogens += 1;
+  oxygen.implicitHydrogens += 1;
+  return createMoleculeFromGraph(atoms, bonds);
+}
+
+export function makeOxidationMetalProduct(oxidantType) {
+  if (oxidantType === "dichromate") {
+    return createMoleculeFromGraph(
+      [new Atom(Elements.Cr, { formalCharge: 3 })],
+      [],
+    );
+  }
+  if (oxidantType === "permanganate") {
+    return createMoleculeFromGraph(
+      [new Atom(Elements.Mn, { formalCharge: 2 })],
+      [],
+    );
+  }
+  throw new TypeError(`Unsupported oxidation agent: ${oxidantType}`);
+}
+
+export function makeReducedHydrideAgentProduct(agentType) {
+  const centralElement = agentType === "borohydride"
+    ? Elements.B
+    : agentType === "aluminium-hydride"
+      ? Elements.Al
+      : null;
+  if (!centralElement) throw new TypeError(`Unsupported reducing agent: ${agentType}`);
+  const atoms = [
+    new Atom(centralElement, { formalCharge: -1 }),
+    ...Array.from({ length: 4 }, () => new Atom(Elements.O, { implicitHydrogens: 1 })),
+  ];
+  return createMoleculeFromGraph(
+    atoms,
+    atoms.slice(1).map((_, index) => ({
+      from: 0,
+      to: index + 1,
+      order: 1,
+      aromatic: false,
+    })),
+  );
+}
+
+export function makeHydrogenMolecule() {
+  return createMoleculeFromGraph(
+    [new Atom(Elements.H), new Atom(Elements.H)],
+    [{ from: 0, to: 1, order: 1, aromatic: false }],
+  );
+}
+
+export function makeWaterMolecule() {
+  return createMoleculeFromGraph(
+    [new Atom(Elements.O, { implicitHydrogens: 2 })],
+    [],
+  );
+}
+
 export function makeAlkoxide(alcohol, site) {
   const atoms = cloneAtoms(alcohol);
   const oxygen = atoms[site.oxygenIndex];
